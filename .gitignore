@@ -1,0 +1,39 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# PyTorch / Machine Learning weights
+*.pt
+*.pth
+*.onnx
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# OS and IDE files
+.DS_Store
+.vscode/
+.idea/
+
+# Project-specific runtime generated files (ignore contents but keep folders)
+reports/*.csv
+reports/*.pdf
+snapshots/*.jpg
+videos/*.mp4
+videos/*.avi
+
+# Developer scratch files
+scratch/
+
+# Large local datasets
+train_dataset/
