@@ -11,7 +11,7 @@ env/
 .env
 
 # PyTorch / Machine Learning weights
-*.pt
+# *.pt
 *.pth
 *.onnx
 
