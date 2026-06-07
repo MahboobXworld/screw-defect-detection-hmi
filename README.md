@@ -33,7 +33,7 @@ A premium, real-time Computer Vision & Human-Machine Interface (HMI) dashboard f
 ## 📁 Project Structure
 
 ```bash
-HMI_0.1/
+screw-defect-detection-hmi/
 ├── main.py                  # Main GUI entrypoint (handles High-DPI and stylesheet setup)
 ├── best.pt                  # Trained YOLOv8s-seg weights (100 epochs)
 ├── README.md                # Project documentation
