@@ -29,7 +29,7 @@ env/
 reports/*.csv
 reports/*.pdf
 snapshots/*.jpg
-videos/*.mp4
+# videos/*.mp4
 videos/*.avi
 
 # Developer scratch files
@@ -37,3 +37,7 @@ scratch/
 
 # Large local datasets
 train_dataset/
+
+# Presentation file
+PROJECT_PRESENTATION.md
+
