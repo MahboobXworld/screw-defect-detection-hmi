@@ -24,7 +24,7 @@ A premium, real-time Computer Vision & Human-Machine Interface (HMI) dashboard f
   * Multi-metric statistics charts showing total inspected, good, and defective counters.
   * Dynamic Progress Bars representing proportion breakdowns of different defects.
 * **SQLite Persistent Logging**: Automatic insertion and updates of inspection results in a local SQLite database (`database/inspection.db`), allowing real-time statistical correction and traceability.
-* **Automated Exporters**: Generate high-quality inspection reports with one click:
+* **Automated Exporters**: Automatically generates high-quality inspection reports when the video stream or camera is stopped:
   * **CSV Reports**: Raw logs containing timestamp, defect type, confidence, and status.
   * **PDF Reports**: Publication-grade summaries containing visual statistics tables, quality scores, and defect breakdown percentages, rendered natively via PyQt6 `QPdfWriter`.
 
@@ -79,5 +79,5 @@ The video stream source can be configured directly through the dashboard UI. Sel
 
 ## 📊 Analytics and Reporting
 * **Inspection Database**: Logs are persistent and saved in `database/inspection.db`.
-* **Exporting Reports**: Clicking "Export Report" in the GUI generates a PDF layout and a CSV datasheet inside the `reports/` folder.
+* **Exporting Reports**: When the video stream or camera is stopped, the system automatically generates a PDF report and a CSV datasheet inside the `reports/` folder.
 * **Dynamic Corrections**: If a screw is initially identified as "good" but later presents a defect (e.g., thread defect) before exiting the screen, the system automatically decrements the good count, increments the defective count, updates the local database row using its original database ID, and refreshes the dashboard in real-time.
