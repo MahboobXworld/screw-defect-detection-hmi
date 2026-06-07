@@ -38,6 +38,3 @@ scratch/
 # Large local datasets
 train_dataset/
 
-# Presentation file
-PROJECT_PRESENTATION.md
-
