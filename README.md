@@ -9,7 +9,7 @@ A premium, real-time Computer Vision & Human-Machine Interface (HMI) dashboard f
 * **Real-time Computer Vision Pipeline**: Integrated with a retrained YOLOv8s-seg model (trained for 100 epochs on the MVTec Screw dataset annotated via Label Studio) to detect screws and classify quality states:
   * `defect_head` (Index 0)
   * `defect_neck` (Index 1)
-  * `screw` (Index 2, mapped internally to `good_screw` to preserve database and HMI compatibility)
+  * `screw` (Index 2)
   * `defect_thread` (Index 3)
   * `defect_tip` (Index 4)
 * **Advanced Multi-Object Tracking & Counting**: A robust custom tracker combining centroid proximity and IoU matching to keep track of screw IDs across frames:
