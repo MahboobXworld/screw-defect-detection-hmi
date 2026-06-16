@@ -15,8 +15,9 @@ env/
 *.pth
 *.onnx
 
-# Allow tracking only the default model weights
-!models/best.onnx
+# Allow tracking all weights inside the models directory
+!models/*.onnx
+!models/*.pt
 
 # Database files
 *.db
