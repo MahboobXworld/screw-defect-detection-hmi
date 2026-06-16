@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import time
+import threading
 from datetime import datetime
 import numpy as np
 import cv2
@@ -11,10 +12,10 @@ import torch
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QSpinBox, QComboBox, QFrame, QScrollArea,
+    QSpinBox, QComboBox, QFrame, QScrollArea, QLineEdit,
     QMessageBox, QGraphicsOpacityEffect, QProgressBar, QApplication
 )
-import pyqtgraph as pg
+
 
 from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot, QTimer, Qt, QPropertyAnimation
 from PyQt6.QtGui import QImage, QPixmap, QColor
@@ -24,10 +25,56 @@ from ui.style import DARK_STYLE
 from core.detector import Detector
 from core.statistics import Statistics
 from core.database import init_db, log_inspection, get_history, clear_history, update_inspection
-from core.exporter import export_csv, export_pdf
+from core.exporter import export_csv, export_pdf, export_excel
 from core.tracker import IoUTracker, clean_detections
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+class FreshFrameReader:
+    """
+    Constantly grabs frames from a VideoCapture source in a background thread
+    to prevent frame buffering and keep the feed completely in real-time.
+    """
+    def __init__(self, source):
+        self.source = source
+        self.cap = cv2.VideoCapture(source)
+        if not self.cap.isOpened() and sys.platform == "darwin":
+            self.cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.ret = False
+        self.frame = None
+        self.running = True
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._update, name="FreshFrameReader", daemon=True)
+        self.thread.start()
+
+    def _update(self):
+        while self.running:
+            if not self.cap.isOpened():
+                time.sleep(0.01)
+                continue
+            ret, frame = self.cap.read()
+            if ret:
+                with self.lock:
+                    self.ret = ret
+                    self.frame = frame
+            else:
+                time.sleep(0.005)
+
+    def read(self):
+        with self.lock:
+            if self.frame is not None:
+                return self.ret, self.frame.copy()
+            return False, None
+
+    def isOpened(self):
+        return self.cap.isOpened()
+
+    def release(self):
+        self.running = False
+        self.thread.join(timeout=0.5)
+        self.cap.release()
+
 
 class InspectionWorker(QThread):
     """
@@ -97,9 +144,7 @@ class InspectionWorker(QThread):
             # --- CAMERA MODE ---
             if self.mode == "camera":
                 if cap is None or not cap.isOpened():
-                    cap = cv2.VideoCapture(self.camera_source)
-                    if not cap.isOpened() and sys.platform == "darwin":
-                        cap = cv2.VideoCapture(self.camera_source, cv2.CAP_AVFOUNDATION)
+                    cap = FreshFrameReader(self.camera_source)
                     if not cap.isOpened():
                         self.error_occurred.emit("Failed to open camera source")
                         time.sleep(1)
@@ -271,7 +316,7 @@ class MainWindow(QMainWindow):
         # Initialize sub-systems
         init_db()
         self.stats = Statistics()
-        self.detector = Detector(model_path=os.path.join(PROJECT_ROOT, "best.pt"))
+        self.detector = Detector(model_path=os.path.join(PROJECT_ROOT, "models", "best.onnx"))
         
         # System state tracking
         self.start_time = time.time()
@@ -444,7 +489,8 @@ class MainWindow(QMainWindow):
         self.combo_mode = QComboBox()
         self.combo_mode.addItems([
             "Video File Inspection",
-            "Live Webcam Feed"
+            "Live Webcam Feed",
+            "Mobile IP Camera Stream"
         ])
         self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
         ctrl_grid.addWidget(self.combo_mode, 0, 1)
@@ -471,12 +517,33 @@ class MainWindow(QMainWindow):
         ctrl_grid.addWidget(self.btn_upload_video, 1, 2)
         ctrl_grid.addWidget(self.combo_video_select, 1, 3)
 
-        # Export & Reset Group (Row 2) - Laid out in a 2x2 grid for layout wrapping on small screens
+        # Mobile IP Camera Stream controls (Row 2)
+        self.lbl_mobile_url = QLabel("MOBILE STREAM URL:")
+        self.txt_mobile_url = QLineEdit()
+        self.txt_mobile_url.setPlaceholderText("e.g. http://192.168.0.X:8080/video or rtsp://...")
+        self.txt_mobile_url.setText("http://192.168.0.197:8080/video")
+        self.txt_mobile_url.textChanged.connect(self.on_mobile_url_changed)
+        ctrl_grid.addWidget(self.lbl_mobile_url, 2, 0)
+        ctrl_grid.addWidget(self.txt_mobile_url, 2, 1, 1, 3)
+
+        # Export & Reset Group (Row 3)
         self.btn_reset = QPushButton("RESET STATS")
         self.btn_reset.setObjectName("btn_danger")
         self.btn_reset.clicked.connect(self.on_reset_stats)
         
-        ctrl_grid.addWidget(self.btn_reset, 3, 0, 1, 4)
+        self.btn_export_csv = QPushButton("EXPORT CSV")
+        self.btn_export_csv.clicked.connect(self.on_export_csv)
+        
+        self.btn_export_pdf = QPushButton("EXPORT PDF")
+        self.btn_export_pdf.clicked.connect(self.on_export_pdf)
+        
+        self.btn_export_excel = QPushButton("EXPORT EXCEL")
+        self.btn_export_excel.clicked.connect(self.on_export_excel)
+        
+        ctrl_grid.addWidget(self.btn_reset, 3, 0)
+        ctrl_grid.addWidget(self.btn_export_csv, 3, 1)
+        ctrl_grid.addWidget(self.btn_export_pdf, 3, 2)
+        ctrl_grid.addWidget(self.btn_export_excel, 3, 3)
         
         left_layout.addWidget(ctrl_frame, stretch=0)
         body_layout.addLayout(left_layout, stretch=3)
@@ -757,7 +824,7 @@ class MainWindow(QMainWindow):
         
         # Status Label text
         self.status_label = QLabel("✔ SYSTEM ONLINE | OPERATION TYPE: SIMULATION")
-        self.status_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #A0A0A0; z-index: 10;")
+        self.status_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #A0A0A0;")
         status_bar_layout.addWidget(self.status_label)
         
         # QPropertyAnimation
@@ -812,15 +879,19 @@ class MainWindow(QMainWindow):
         # Always update efficiency gauges on every incoming frame
         self.update_efficiency_ui()
         
-        # Process new (uncounted) tracks immediately when they are active and crossing the 35% screen boundary
+        # Process new (uncounted) tracks immediately when they are active and crossing the counting boundary
         for track in active_tracks:
             if not track.counted:
-                # Eligibility check: did it spawn near the edges (left 25% or right 25%)?
-                # Counting boundary check: has it crossed 35% of the screen width from the entry side?
+                # Eligibility check: did it spawn near the edges (left, right, top, or bottom 25%)?
+                # Counting boundary check: has it crossed the threshold from the entry side?
+                # Fallback: automatically count any track present for at least 10 frames (stationary/center placement).
                 h_img, w_img = raw_frame.shape[:2]
                 spawn_x = track.cx_history[0]
+                spawn_y = track.cy_history[0]
                 curr_x = track.cx_history[-1]
-                conveyor_dir = self.tracker.conveyor_direction
+                curr_y = track.cy_history[-1]
+                
+                presence_frames = len(track.cx_history)
                 
                 is_eligible = False
                 should_count = False
@@ -829,16 +900,28 @@ class MainWindow(QMainWindow):
                 if self.tracker.frame_idx <= 5:
                     is_eligible = True
                     should_count = True
+                elif presence_frames >= 10:
+                    # Fallback for stationary or center-placed objects
+                    is_eligible = True
+                    should_count = True
                 else:
-                    if conveyor_dir == "L2R":
-                        is_eligible = (spawn_x < w_img * 0.25)
-                        should_count = (curr_x >= w_img * 0.35)
-                    elif conveyor_dir == "R2L":
-                        is_eligible = (spawn_x > w_img * 0.75)
-                        should_count = (curr_x <= w_img * 0.65)
-                    else:
-                        is_eligible = (spawn_x < w_img * 0.25 or spawn_x > w_img * 0.75)
-                        should_count = (curr_x >= w_img * 0.35 or curr_x <= w_img * 0.65)
+                    # Check boundary entry points
+                    if spawn_x < w_img * 0.25:  # Left entry
+                        is_eligible = True
+                        if curr_x >= w_img * 0.35:
+                            should_count = True
+                    elif spawn_x > w_img * 0.75:  # Right entry
+                        is_eligible = True
+                        if curr_x <= w_img * 0.65:
+                            should_count = True
+                    elif spawn_y < h_img * 0.25:  # Top entry
+                        is_eligible = True
+                        if curr_y >= h_img * 0.35:
+                            should_count = True
+                    elif spawn_y > h_img * 0.75:  # Bottom entry
+                        is_eligible = True
+                        if curr_y <= h_img * 0.65:
+                            should_count = True
                         
                 if not is_eligible:
                     # Mark as counted so we stop checking it
@@ -846,7 +929,7 @@ class MainWindow(QMainWindow):
                     continue
                     
                 if not should_count:
-                    # Eligible but hasn't reached the 35% screen width counting boundary yet: check next frame
+                    # Eligible but hasn't crossed the threshold yet: check next frame
                     continue
 
                 track.counted = True
@@ -1028,9 +1111,9 @@ class MainWindow(QMainWindow):
             self.lbl_storage_status.setStyleSheet("font-size: 11px; font-weight: bold; color: #FF3B5C; border: 1px solid #FF3B5C; border-radius: 4px; padding: 4px 8px; background-color: #3E1A1E;")
             
         # Camera Indicator
-        if self.combo_mode.currentIndex() == 1: # Webcam Mode
+        if self.combo_mode.currentIndex() in (1, 2): # Webcam or Mobile Stream Mode
             if self.worker.running and not self.worker.paused:
-                self.lbl_cam_status.setText("CAM: ONLINE")
+                self.lbl_cam_status.setText("CAM: ONLINE" if self.combo_mode.currentIndex() == 1 else "CAM: STREAMING")
                 self.lbl_cam_status.setStyleSheet("font-size: 11px; font-weight: bold; color: #00FF88; border: 1px solid #00FF88; border-radius: 4px; padding: 4px 8px; background-color: #1A3E2B;")
             else:
                 self.lbl_cam_status.setText("CAM: OFFLINE")
@@ -1085,12 +1168,13 @@ class MainWindow(QMainWindow):
         self.ai_insight_rec.setText(rec)
 
     def auto_generate_reports(self):
-        """Automatically exports CSV and PDF report files once when the run finishes."""
+        """Automatically exports CSV, PDF, and Excel report files once when the run finishes."""
         try:
             history = get_history(100, since=self.current_run_start_time) if self.current_run_start_time else get_history(100)
             csv_file = export_csv(self.stats, history)
             pdf_file = export_pdf(self.stats, history)
-            print(f"[Auto Report] Generated {csv_file} and {pdf_file}")
+            excel_file = export_excel(self.stats, history)
+            print(f"[Auto Report] Generated {csv_file}, {pdf_file}, and {excel_file}")
         except Exception as e:
             print(f"[Auto Report Error] {e}")
         self.report_generated = True
@@ -1190,8 +1274,8 @@ class MainWindow(QMainWindow):
         self.spin_camera_source.hide()
         self.btn_upload_video.hide()
         self.combo_video_select.hide()
-        self.btn_upload_video.hide()
-        self.combo_video_select.hide()
+        self.lbl_mobile_url.hide()
+        self.txt_mobile_url.hide()
         
         self.report_generated = False
         if idx == 0:  # Video File Inspection
@@ -1205,8 +1289,9 @@ class MainWindow(QMainWindow):
             # Show Video controls
             self.btn_upload_video.show()
             self.combo_video_select.show()
-        else:  # Live Webcam Feed
+        elif idx == 1:  # Live Webcam Feed
             self.worker.mode = "camera"
+            self.worker.camera_source = self.spin_camera_source.value()
             self.worker.paused = True
             self.btn_play_pause.setEnabled(True)
             self.btn_play_pause.setText("START CAMERA")
@@ -1216,6 +1301,18 @@ class MainWindow(QMainWindow):
             # Show Camera index selector
             self.lbl_camera_source_spin.show()
             self.spin_camera_source.show()
+        elif idx == 2:  # Mobile IP Camera Stream
+            self.worker.mode = "camera"
+            self.worker.camera_source = self.txt_mobile_url.text().strip()
+            self.worker.paused = True
+            self.btn_play_pause.setEnabled(True)
+            self.btn_play_pause.setText("START STREAM")
+            self.btn_play_pause.setObjectName("btn_success")
+            self.status_label.setText("✔ MOBILE STREAM READY | PRESS START")
+            
+            # Show Mobile Stream URL controls
+            self.lbl_mobile_url.show()
+            self.txt_mobile_url.show()
             
         self.apply_theme()
         self.update_system_health()
@@ -1236,10 +1333,20 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("✔ CAMERA STOPPED")
                 if not self.report_generated:
                     self.auto_generate_reports()
+            elif self.combo_mode.currentIndex() == 2:
+                self.btn_play_pause.setText("START STREAM")
+                self.worker.restart_capture = True
+                self.clear_inspection_view("NO MOBILE STREAM SIGNAL")
+                self.status_label.setText("✔ STREAM STOPPED")
+                if not self.report_generated:
+                    self.auto_generate_reports()
             self.btn_play_pause.setObjectName("btn_success")
         else:
             if self.combo_mode.currentIndex() == 1:
                 self.btn_play_pause.setText("STOP CAMERA")
+            elif self.combo_mode.currentIndex() == 2:
+                self.btn_play_pause.setText("STOP STREAM")
+                self.worker.camera_source = self.txt_mobile_url.text().strip()
             else:
                 self.btn_play_pause.setText("PAUSE RUN")
             self.btn_play_pause.setObjectName("btn_danger")
@@ -1259,6 +1366,12 @@ class MainWindow(QMainWindow):
         self.worker.camera_source = val
         self.worker.restart_capture = True
         self.status_label.setText(f"✔ CAMERA INDEX UPDATED TO {val}")
+
+    def on_mobile_url_changed(self, val):
+        """Adjusts selected mobile camera stream URL source."""
+        self.worker.camera_source = val.strip()
+        self.worker.restart_capture = True
+        self.status_label.setText(f"✔ MOBILE STREAM URL UPDATED")
 
     def populate_video_list(self):
         """Scans the videos directory and populates the video dropdown list."""
@@ -1373,6 +1486,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Export Report", f"Successfully printed session report to PDF:\n{filename}")
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export PDF: {str(e)}")
+
+    def on_export_excel(self):
+        try:
+            history = get_history(100, since=self.current_run_start_time) if self.current_run_start_time else get_history(100)
+            filename = export_excel(self.stats, history)
+            QMessageBox.information(self, "Export Report", f"Successfully saved session summary to Excel:\n{filename}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export Excel: {str(e)}")
 
     # =========================================================================
     # HELPERS

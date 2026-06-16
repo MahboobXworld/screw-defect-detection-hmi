@@ -29,9 +29,9 @@ def clean_detections(detections):
     if not detections:
         return []
 
-    # 1. Horizontal Grouping & Merging of detections belonging to the same physical screw.
-    # Since screws are vertically oriented and move horizontally on the conveyor,
-    # detections on the same physical screw will align horizontally (close X centroids or overlap).
+    # 1. 2D Grouping & Merging of detections belonging to the same physical screw.
+    # Detections on the same physical screw (e.g. defect detections overlapping the screw body)
+    # will have a high overlap or be very close in 2D space.
     n = len(detections)
     parent = list(range(n))
     
@@ -51,19 +51,34 @@ def clean_detections(detections):
         det1 = detections[i]
         b1 = det1['bbox']
         cx1 = (b1[0] + b1[2]) / 2.0
+        cy1 = (b1[1] + b1[3]) / 2.0
         w1 = b1[2] - b1[0]
+        h1 = b1[3] - b1[1]
+        area1 = w1 * h1
         
         for j in range(i + 1, n):
             det2 = detections[j]
             b2 = det2['bbox']
             cx2 = (b2[0] + b2[2]) / 2.0
+            cy2 = (b2[1] + b2[3]) / 2.0
             w2 = b2[2] - b2[0]
+            h2 = b2[3] - b2[1]
+            area2 = w2 * h2
             
-            dist_x = abs(cx1 - cx2)
-            inter_x = max(0, min(b1[2], b2[2]) - max(b1[0], b2[0]))
-            overlap_x = inter_x / min(w1, w2) if min(w1, w2) > 0 else 0
+            iou = calculate_iou(b1, b2)
             
-            if dist_x < 50 or overlap_x > 0.5:
+            # Check container overlap (intersection area over smaller box area)
+            xA = max(b1[0], b2[0])
+            yA = max(b1[1], b2[1])
+            xB = min(b1[2], b2[2])
+            yB = min(b1[3], b2[3])
+            interArea = max(0, xB - xA) * max(0, yB - yA)
+            overlap_ratio = interArea / min(area1, area2) if min(area1, area2) > 0 else 0
+            
+            dist = np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
+            
+            # Group if significant IoU, container overlap, or centroids are very close
+            if iou > 0.3 or overlap_ratio > 0.5 or dist < 50:
                 union(i, j)
                 
     groups = {}
@@ -207,6 +222,7 @@ class Track:
         self.history = [(label, conf)]
         self.counted = False
         self.cx_history = [(bbox[0] + bbox[2]) / 2.0]
+        self.cy_history = [(bbox[1] + bbox[3]) / 2.0]
         self.kf = ScrewKalmanFilter(bbox)
 
     def update(self, bbox, label, conf, frame_idx):
@@ -214,6 +230,7 @@ class Track:
         self.last_seen_frame = frame_idx
         self.history.append((label, conf))
         self.cx_history.append((self.bbox[0] + self.bbox[2]) / 2.0)
+        self.cy_history.append((self.bbox[1] + self.bbox[3]) / 2.0)
         
         # Prioritize defects over good_screw in history labels
         defect_labels = [h[0] for h in self.history if h[0] != "good_screw"]
@@ -227,6 +244,7 @@ class Track:
     def predict_update(self, bbox):
         self.bbox = bbox
         self.cx_history.append((bbox[0] + bbox[2]) / 2.0)
+        self.cy_history.append((bbox[1] + bbox[3]) / 2.0)
 
 class IoUTracker:
     def __init__(self, iou_threshold=0.05, max_lost_frames=5):
@@ -270,20 +288,34 @@ class IoUTracker:
         matched_detections = set()
         matched_tracks = set() # indices in active_tracks
         
-        # Greedy matching based on IoU and centroid proximity using predicted bboxes
+        # Greedy matching based on IoU and centroid proximity using predicted and last-seen bboxes
         if active_tracks and detections:
+            # We calculate metrics for both predicted state and last-seen state,
+            # and use the best (max IoU / min distance) to match.
             iou_matrix = np.zeros((len(active_tracks), len(detections)))
             dist_matrix = np.zeros((len(active_tracks), len(detections)))
             for t_idx, track in enumerate(active_tracks):
+                # Predicted state
                 pred_bbox = predicted_bboxes[track.track_id]
-                track_cx = (pred_bbox[0] + pred_bbox[2]) / 2.0
-                track_cy = (pred_bbox[1] + pred_bbox[3]) / 2.0
+                pred_cx = (pred_bbox[0] + pred_bbox[2]) / 2.0
+                pred_cy = (pred_bbox[1] + pred_bbox[3]) / 2.0
+                
+                # Last-seen state
+                last_bbox = track.bbox
+                last_cx = (last_bbox[0] + last_bbox[2]) / 2.0
+                last_cy = (last_bbox[1] + last_bbox[3]) / 2.0
+                
                 for d_idx, det in enumerate(detections):
                     det_cx = (det['bbox'][0] + det['bbox'][2]) / 2.0
                     det_cy = (det['bbox'][1] + det['bbox'][3]) / 2.0
                     
-                    iou_matrix[t_idx, d_idx] = calculate_iou(pred_bbox, det['bbox'])
-                    dist_matrix[t_idx, d_idx] = np.sqrt((track_cx - det_cx)**2 + (0.1 * (track_cy - det_cy))**2)
+                    iou_pred = calculate_iou(pred_bbox, det['bbox'])
+                    iou_last = calculate_iou(last_bbox, det['bbox'])
+                    iou_matrix[t_idx, d_idx] = max(iou_pred, iou_last)
+                    
+                    dist_pred = np.sqrt((pred_cx - det_cx)**2 + (pred_cy - det_cy)**2)
+                    dist_last = np.sqrt((last_cx - det_cx)**2 + (last_cy - det_cy)**2)
+                    dist_matrix[t_idx, d_idx] = min(dist_pred, dist_last)
             
             # Match candidates Phase 1: IoU >= self.iou_threshold
             matches = []
@@ -324,37 +356,21 @@ class IoUTracker:
                         self.frame_idx
                     )
             
-            # Match candidates Phase 2: Centroid Proximity with Auto-Direction
+            # Match candidates Phase 2: Centroid Proximity (direction-agnostic)
             proximity_matches = []
             for t_idx in range(len(active_tracks)):
                 if t_idx in matched_tracks:
                     continue
-                track = active_tracks[t_idx]
-                pred_bbox = predicted_bboxes[track.track_id]
-                track_cx = (pred_bbox[0] + pred_bbox[2]) / 2.0
                 for d_idx in range(len(detections)):
                     if d_idx in matched_detections:
                         continue
-                    det = detections[d_idx]
-                    det_cx = (det['bbox'][0] + det['bbox'][2]) / 2.0
-                    
-                    dx = det_cx - track_cx
                     dist = dist_matrix[t_idx, d_idx]
-                    
-                    valid_direction = True
-                    if self.conveyor_direction == "L2R":
-                        if dx < -20:
-                            valid_direction = False
-                    elif self.conveyor_direction == "R2L":
-                        if dx > 20:
-                            valid_direction = False
-                            
-                    if valid_direction and dist < 80:
-                        proximity_matches.append((dist, t_idx, d_idx, dx))
+                    if dist < 80:
+                        proximity_matches.append((dist, t_idx, d_idx))
             
             # Sort proximity matches ascending (closest first)
             proximity_matches.sort(key=lambda x: x[0])
-            for dist, t_idx, d_idx, dx in proximity_matches:
+            for dist, t_idx, d_idx in proximity_matches:
                 if t_idx not in matched_tracks and d_idx not in matched_detections:
                     matched_tracks.add(t_idx)
                     matched_detections.add(d_idx)

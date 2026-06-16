@@ -11,9 +11,12 @@ env/
 .env
 
 # PyTorch / Machine Learning weights
-# *.pt
+*.pt
 *.pth
 *.onnx
+
+# Allow tracking only the default model weights
+!models/best.onnx
 
 # Database files
 *.db
@@ -28,8 +31,12 @@ env/
 # Project-specific runtime generated files (ignore contents but keep folders)
 reports/*.csv
 reports/*.pdf
+reports/*.xlsx
 snapshots/*.jpg
-# videos/*.mp4
+
+# Ignore conveyor videos except for the sample VID_2.mp4
+videos/*.mp4
+!videos/VID_2.mp4
 videos/*.avi
 
 # Developer scratch files
@@ -37,4 +44,3 @@ scratch/
 
 # Large local datasets
 train_dataset/
-

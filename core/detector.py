@@ -1,6 +1,7 @@
 import time
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from core.tracker import calculate_iou
 
@@ -9,7 +10,7 @@ class Detector:
     """
     Runs the YOLOv8 model on a single frame.
 
-    The model file 'best.pt' must be in the project root.
+    The model file 'best.onnx' must be in the models/ directory.
 
     Detects these classes:
         - good_screw
@@ -19,11 +20,22 @@ class Detector:
         - tip_defect
     """
 
-    def __init__(self, model_path="best.pt", confidence=0.4):
+    def __init__(self, model_path="models/best.onnx", confidence=0.4):
         self.model_path = model_path
         self.confidence = confidence
-        self.model = YOLO(model_path)
+        # Explicitly define segment task for ONNX models to avoid auto-guessing warnings
+        if model_path.endswith(".onnx"):
+            self.model = YOLO(model_path, task="segment")
+        else:
+            self.model = YOLO(model_path)
+        # Automatically detect best hardware accelerator (GPU/CUDA vs CPU)
+        self.device = 0 if torch.cuda.is_available() else "cpu"
+        print(f"[Detector] Initialized on device: {self.device}")
         self.prev_time = time.time()
+        
+        # Sliding window for smooth and stable FPS rendering
+        from collections import deque
+        self.fps_window = deque(maxlen=20)
 
     def predict(self, frame):
         """
@@ -39,8 +51,10 @@ class Detector:
         results = self.model(
             frame,
             conf=0.10,  # Run internally with lower confidence to capture good screws
+            device=self.device,  # Accelerate using selected hardware device
             verbose=False
         )
+
 
         # Map 'screw' to 'good_screw' in results names dictionary
         if results and len(results) > 0:
@@ -155,15 +169,17 @@ class Detector:
                     if best_iou >= 0.3:
                         track_id = best_track.track_id
 
-                # Resize mask if it does not match the image shape
-                if mask.shape != (h, w):
-                    mask = cv2.resize(
-                        mask,
-                        (w, h),
-                        interpolation=cv2.INTER_NEAREST
-                    )
+                # Retrieve mask in original image coordinates using polygon coordinates (r.masks.xy)
+                # to prevent stretching/shifting offset from letterboxing.
+                mask_bool = np.zeros((h, w), dtype=bool)
+                if r.masks is not None and idx < len(r.masks.xy):
+                    polygon = r.masks.xy[idx]
+                    if len(polygon) > 0:
+                        poly_pts = polygon.astype(np.int32).reshape((-1, 1, 2))
+                        mask_img = np.zeros((h, w), dtype=np.uint8)
+                        cv2.fillPoly(mask_img, [poly_pts], 255)
+                        mask_bool = mask_img > 0
 
-                mask_bool = mask > 0.5
                 if not np.any(mask_bool):
                     continue
 
@@ -186,21 +202,15 @@ class Detector:
                     0
                 )
 
-                # Draw bounding box from mask contours
-                contours, _ = cv2.findContours(
-                    mask_bool.astype(np.uint8),
-                    cv2.RETR_EXTERNAL,
-                    cv2.CHAIN_APPROX_SIMPLE
+                # Draw bounding box using the model's official coordinates (already corrected/scaled)
+                bx1, by1, bx2, by2 = bbox_coords
+                cv2.rectangle(
+                    img,
+                    (int(bx1), int(by1)),
+                    (int(bx2), int(by2)),
+                    color,
+                    2
                 )
-                for cnt in contours:
-                    x, y, bw, bh = cv2.boundingRect(cnt)
-                    cv2.rectangle(
-                        img,
-                        (x, y),
-                        (x + bw, y + bh),
-                        color,
-                        2
-                    )
 
                 # Store info
                 image_defects.append({
@@ -261,24 +271,34 @@ class Detector:
             2
         )
 
-        # Status text overlay
-        status = "DEFECTIVE" if len(image_defects) > 0 else "GOOD"
-        result_color = (0, 0, 255) if status == "DEFECTIVE" else (0, 255, 0)
-        cv2.putText(
-            img,
-            status,
-            (20, 60),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.5,
-            result_color,
-            3
-        )
+        # Status text overlay (only draw if a screw is detected in the frame)
+        if self.get_top_label(results) is not None:
+            status = "DEFECTIVE" if len(image_defects) > 0 else "GOOD"
+            result_color = (0, 0, 255) if status == "DEFECTIVE" else (0, 255, 0)
+            cv2.putText(
+                img,
+                status,
+                (20, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.5,
+                result_color,
+                3
+            )
 
-        # FPS calculation and overlay
+        # FPS calculation and overlay (rolling average to prevent spikes)
         curr_time = time.time()
         elapsed = curr_time - self.prev_time
         self.prev_time = curr_time
-        fps = 1.0 / elapsed if elapsed > 0 else 0.0
+        
+        # Only record elapsed times that are reasonable (e.g. between 1ms and 2s)
+        if 0.001 <= elapsed <= 2.0:
+            self.fps_window.append(elapsed)
+            
+        if len(self.fps_window) > 0:
+            avg_elapsed = sum(self.fps_window) / len(self.fps_window)
+            fps = 1.0 / avg_elapsed if avg_elapsed > 0 else 0.0
+        else:
+            fps = 0.0
 
         cv2.putText(
             img,

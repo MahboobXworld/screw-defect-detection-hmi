@@ -57,11 +57,11 @@ graph TD
     D -->|Real-Time KPI Updates| E[PyQt6 UI Widgets & Gauges]
     D -->|Logged Inspections| F[SQLite Database]
     D -->|Dynamic Corrections| F
-    D -->|PDF/CSV Reports| G[Exporter Engine]
+    D -->|PDF/CSV/Excel Reports| G[Exporter Engine]
 ```
 
-*   **My Detector Pipeline (`detector.py`)**: Wraps the YOLOv8-Seg model. I configured it to operate internally at a lower confidence threshold (`0.10`) for the general `'screw'` class to guarantee that no physical screws are missed, while using a higher confidence threshold (`0.40`) for defects to prevent false alarms.
-*   **My Tracker & Association Logic (`tracker.py`)**: I implemented a custom multi-object tracker combining a constant-velocity Kalman Filter, centroid proximity matching, and IoU matching to keep track of screw IDs across frames.
+*   **My Detector Pipeline (`detector.py`)**: Wraps the YOLOv8-Seg model. I configured it to operate internally at a lower confidence threshold (`0.10`) for the general `'screw'` class to guarantee that no physical screws are missed, while using a higher confidence threshold (`0.40`) for defects to prevent false alarms. Corrects YOLO letterboxing margins using native polygon geometries and computes a stable, rolling FPS window.
+*   **My Tracker & Association Logic (`tracker.py`)**: I implemented a custom direction-agnostic multi-object tracker combining a constant-velocity Kalman Filter, isotropic centroid proximity matching, and IoU matching to keep track of screw IDs across frames.
 *   **My Statistics Manager (`statistics.py`)**: Manages real-time yield percentage calculations, rolling yield averages (last 30 parts), and defect counts.
 *   **My Database Model (`database.py`)**: Handles SQLite logging. Stores timestamps, classifications, confidence scores, and local image paths for defects.
 *   **My HMI Main Window (`main_window.py`)**: Coordinates background processing threads and updates the premium PyQt6 dark-themed UI.
@@ -72,21 +72,21 @@ graph TD
 
 To ensure extreme counting accuracy and prevent duplicate entries on a moving conveyor belt, I designed and implemented several key improvements to the tracking and classification pipeline:
 
-### 1. Unified Screw-Level Detection Merging
+### 1. Unified 2D Isotropic Detection Merging
 *   **Problem**: A defective screw would often trigger multiple bounding boxes (e.g., one for the `screw` body and others for specific defect segments like `defect_tip`). Standard trackers would see these as separate objects, double-counting the screw and inflating defect counts.
-*   **My Improvement**: I developed a **Horizontal Detection Merging** algorithm (`clean_detections`). It groups overlapping detections based on X-centroid alignment (distance < 50px) or horizontal overlap (ratio > 50%) before the tracking stage. The merged group is given the most severe defect label if any exists, or marked as a `good_screw` if only the clean body is detected.
+*   **My Improvement**: I developed a **2D Isotropic Detection Merging** algorithm (`clean_detections`). It groups overlapping detections based on their 2D IoU (> 0.3), bounding box area overlap ratio (> 50%), or centroid distance (< 50 pixels) before the tracking stage. The merged group is given the most severe defect label if any exists, or marked as a `good_screw` if only the clean body is detected.
 
 ### 2. Trajectory Smoothing via Kalman Filtering
 *   **Problem**: Rapid motion, glare, or camera shadows caused temporary detection dropouts (1-2 frames), resulting in the tracker losing the screw and assigning a new ID when it reappeared.
-*   **My Improvement**: I integrated a **6-State Constant Velocity Kalman Filter** ($cx, cy, w, h, vx, vy$) to predict the screw's position. If the detector fails to find a screw in a frame, the tracker relies on the Kalman Filter prediction to preserve its ID and trace its path across temporary occlusions.
+*   **My Improvement**: I integrated a **6-State Constant Velocity Kalman Filter** ($cx, cy, w, h, vx, vy$) to predict the screw's position in 2D space. If the detector fails to find a screw in a frame, the tracker relies on the Kalman Filter prediction to preserve its ID and trace its path across temporary occlusions.
 
-### 3. Direction-Aware Proximity Association
-*   **Problem**: In high-density settings, simple IoU matching fails when screws overlap or move closely.
-*   **My Improvement**: I implemented a **Hybrid Matcher** combining IoU matching and Centroid proximity. The centroid distance calculation is weighted horizontally and is constrained by **Conveyor Direction Auto-Detection**. It filters out matches that would require a screw to move backward relative to the conveyor belt flow direction (Left-to-Right or Right-to-Left).
+### 3. Direction-Agnostic and Drift-Resistant Matching
+*   **Problem**: Industrial conveyors might move in multiple directions (left-to-right, right-to-left, top-to-bottom, diagonal) or even stop-and-go. Additionally, Kalman Filter state predictions drift when an object is stationary, leading to incorrect matches and ID swaps.
+*   **My Improvement**: I implemented a **Drift-Resistant Proximity Association** scheme. Tracks are matched to detections by evaluating proximity to **both** their Kalman Filter predicted positions and their last-seen positions. This allows the tracker to handle any conveyor direction dynamically and guarantees ID persistence even if a screw sits completely stationary for long periods.
 
-### 4. Entry-Zone Spawn Filtering & Delayed Counting
-*   **Problem**: Detections appearing midway through the frame (e.g., due to background noise or late detection) caused false tracks and corrupted statistics.
-*   **My Improvement**: I enforced a **Spawn and Counting Boundary Filter**. New tracks are only initialized and marked eligible for counting if they spawn in the entry zone (outer 25% of the frame width). The count is only registered once the track crosses a center threshold (35% width), ensuring the tracking label has stabilized.
+### 4. Multi-Directional Spawning & Stationary Count Fallback
+*   **Problem**: Screws spawning at different edges of the screen or dropping onto the belt in the center of the camera view would escape traditional single-boundary counting zones.
+*   **My Improvement**: I enforced a **Multi-Directional Spawning & Presence Filter**. The system checks for entry spawns along all four boundaries of the screen (Top, Bottom, Left, Right). Furthermore, I implemented a **Stationary Count Fallback**: if any screw is detected in the frame for at least 10 frames continuously, it is automatically registered and counted, allowing the system to inspect static and stop-and-go conveyor belts.
 
 ### 5. Dynamic Label Correction & Retroactive Database Sync
 *   **Problem**: A screw might appear perfect in the entry zone (labeled `good_screw`) but reveal a defect (e.g., `defect_thread`) once it reaches the center of the camera frame.
@@ -100,7 +100,7 @@ During development and testing, I ran into several complex physical and visual c
 
 ### Challenge 1: The Double-Counting of Defective Screws
 *   **My Struggle**: When a screw had a defect (e.g., a `tip_defect`), YOLO detected both the screw body (`screw`) and the defect (`tip_defect`) as separate bounding boxes. The tracker treated these as two separate physical objects, resulting in double-counting a single screw.
-*   **My Solution**: I developed a **Horizontal Detection Merging** routine (`clean_detections`) in `tracker.py`. Detections that align horizontally or overlap significantly (centroid distance < 50px or overlap ratio > 50%) are merged into a single detection group before entering the tracking loop. If the group contains any defect, the merged object inherits the defect label. If no defects are present, it is classified as a good screw.
+*   **My Solution**: I developed a **2D Isotropic Detection Merging** routine (`clean_detections`) in `tracker.py`. Detections that align in 2D space (IoU > 0.3, overlap ratio > 50%, or Euclidean distance < 50px) are merged into a single detection group before entering the tracking loop. If the group contains any defect, the merged object inherits the defect label. If no defects are present, it is classified as a good screw.
 
 ### Challenge 2: Trajectory Drift & Frame Gaps (Tracking Loss)
 *   **My Struggle**: Screws moving quickly on the conveyor sometimes experienced detection dropouts for 1–2 frames due to reflections or lighting changes. When the screw reappeared, the tracker failed to associate it and assigned a new ID, causing double-counting.
@@ -108,11 +108,11 @@ During development and testing, I ran into several complex physical and visual c
 
 ### Challenge 3: Spurious Noise & Edge-Spawn Duplication
 *   **My Struggle**: Screws entering or exiting the camera frame were frequently lost and re-detected, causing duplicate counts at the borders.
-*   **My Solution**: I enforced an **Entry-Zone Spawn Filter**. A track is only marked as "eligible for counting" if its initial detection coordinates (spawn point) are within the first 25% of the screen width (the entry boundary). Furthermore, it is not counted immediately; counting is delayed until the track crosses past a 35% screen width threshold.
+*   **My Solution**: I enforced a **Multi-Directional Spawn Filter**. A track is only marked as "eligible for counting" if its initial detection coordinates (spawn point) are within any of the outer 25% boundaries of the frame (Top, Bottom, Left, Right). Furthermore, it is not counted immediately; counting is delayed until the track crosses past a crossing threshold.
 
-### Challenge 4: Conveyor Direction Auto-Detection
-*   **My Struggle**: The entry-zone filtering logic needed to know whether the conveyor belt was moving Left-to-Right (L2R) or Right-to-Left (R2L). Hardcoding this restricted deployment flexibility.
-*   **My Solution**: I implemented **Conveyor Direction Auto-Detection**. The tracker records the horizontal displacement ($\Delta x$) of active tracks. It accumulates these signs in a rolling window. Once a clear net direction (e.g., at least 5 consistent frames) is established, the system automatically sets the direction configuration (`L2R` or `R2L`), adapting the entry-zone and counting thresholds dynamically.
+### Challenge 4: Designing a Direction-Agnostic & Drift-Resistant Tracker
+*   **My Struggle**: The conveyor belt direction varied between different installation sites, and some lines operated in stop-and-go mode. Hardcoding direction or relying solely on Kalman prediction led to tracking drift and ID flickering.
+*   **My Solution**: I removed all direction filters (`valid_direction`) from the tracker, making it fully direction-agnostic. To resolve Kalman drift on stationary screws, I refactored the track-to-detection matching logic to calculate Euclidean distance and IoU against both the Kalman-predicted state and the last-seen state of the track, ensuring ID continuity under all conveyor motion styles.
 
 ### Challenge 5: Dynamic Label Correction
 *   **My Struggle**: A screw entering the frame might look perfect initially and get counted as "good." But as it moves closer to the center, a defect (like a `thread_defect`) becomes visible. If we just counted it and locked the label, we would miss the defect.
@@ -123,7 +123,15 @@ During development and testing, I ran into several complex physical and visual c
 
 ### Challenge 6: Model Retraining & Class List Compatibility
 *   **My Struggle**: The model was retrained on a new dataset, changing the class names and order (`head_defect`, `neck_defect`, `screw`, `thread_defect`, `tip_defect`). The old class `'good_screw'` was replaced with `'screw'`. This broke the database schema, statistical reports, and HMI display fields.
-*   **My Solution**: I implemented an in-place **Class Mapping** layer inside the `Detector.predict` output. When the model outputs detections, the detector intercepts the results and maps `'screw'` directly to `'good_screw'` in-place in the `results[0].names` dictionary. This preserves complete backwards compatibility across the SQL database, CSV/PDF exporters, and progress bar configurations.
+*   **My Solution**: I implemented an in-place **Class Mapping** layer inside the `Detector.predict` output. When the model outputs detections, the detector intercepts the results and maps `'screw'` directly to `'good_screw'` in-place in the `results[0].names` dictionary. This preserves complete backwards compatibility across the SQL database, CSV/PDF/Excel exporters, and progress bar configurations.
+
+### Challenge 7: Mask Alignment and Bounding Box Offsets on Custom Aspect Ratios
+*   **My Struggle**: When processing videos/camera feeds with aspect ratios differing from YOLO's native 640x640 input resolution, the overlays and bounding boxes were shifted and stretched, not matching the physical screws.
+*   **My Solution**: I modified `draw_results` in `core/detector.py` to extract YOLO's letterbox-corrected polygon coordinates (`r.masks.xy[idx]`) directly and paint them onto the frame via `cv2.fillPoly`. We also draw the bounding boxes using the official scaled `r.boxes.xyxy` coordinates rather than calculating them from uncorrected mask contours.
+
+### Challenge 8: Erratic Status Overlays and Bouncing FPS Readings
+*   **My Struggle**: On empty frames (no screw present), the UI erroneously displayed a `"GOOD"` status overlay. Additionally, the FPS display on the frame fluctuated wildly (spiking to 500+ FPS) when frames were processed in rapid succession.
+*   **My Solution**: I updated the overlay drawing logic to check if a screw is actually present in the frame using `self.get_top_label(results)`; otherwise, the status remains blank. For the FPS readout, I implemented a rolling window of the last 20 frames (`collections.deque`), ignoring sub-millisecond timestamps, which provides a smooth, accurate, and stable FPS display.
 
 ---
 
