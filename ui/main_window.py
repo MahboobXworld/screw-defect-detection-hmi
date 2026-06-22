@@ -316,7 +316,7 @@ class MainWindow(QMainWindow):
         # Initialize sub-systems
         init_db()
         self.stats = Statistics()
-        self.detector = Detector(model_path=os.path.join(PROJECT_ROOT, "models", "best.onnx"))
+        self.detector = Detector(model_path=os.path.join(PROJECT_ROOT, "models", "best.pt"))
         
         # System state tracking
         self.start_time = time.time()

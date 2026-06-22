@@ -18,11 +18,11 @@ I built this Automated Screw Defect Inspection System to serve as a high-speed, 
 
 ### A. Dataset and Annotation
 I used the MVTec Screw dataset downloaded from Roboflow and annotated it using Label Studio. I labeled the dataset using segmentation annotations with the following classes:
+*   `head_defect`
+*   `neck_defect`
 *   `screw`
-*   `defect_head`
-*   `defect_neck`
-*   `defect_thread`
-*   `defect_tip`
+*   `thread_defect`
+*   `tip_defect`
 
 I chose this class structure to improve defect localization and support downstream tasks such as object tracking and counting defective versus non-defective screws.
 
@@ -138,14 +138,16 @@ During development and testing, I ran into several complex physical and visual c
 ## 6. Model & System Performance Metrics
 
 ### Model Evaluation Metrics (Validation Dataset)
-*   **Overall Precision**: 0.9667
-*   **Overall Recall**: 0.9949
 *   **Detection Performance (Box)**:
-    *   mAP@50: 0.9950
-    *   mAP@50–95: 0.9292
+    *   Precision: 0.9043
+    *   Recall: 0.8592
+    *   mAP@50: 0.8899
+    *   mAP@50–95: 0.6191
 *   **Segmentation Performance (Mask)**:
-    *   mAP@50: 0.9950
-    *   mAP@50–95: 0.8259
+    *   Precision: 0.8874
+    *   Recall: 0.8523
+    *   mAP@50: 0.8823
+    *   mAP@50–95: 0.5195
 
 ### System Inspection Performance (Conveyor Video Runs)
 *   **Inspection Accuracy**: 100% screw detection rate via low-confidence tracking.

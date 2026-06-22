@@ -2,6 +2,17 @@ import time
 import cv2
 import numpy as np
 import torch
+
+# Patch to prevent AttributeError when loading model trained with different ultralytics version
+try:
+    import ultralytics.utils.loss as loss_mod
+    if not hasattr(loss_mod, 'BCEDiceLoss'):
+        class BCEDiceLoss:
+            pass
+        loss_mod.BCEDiceLoss = BCEDiceLoss
+except (ImportError, AttributeError):
+    pass
+
 from ultralytics import YOLO
 from core.tracker import calculate_iou
 
@@ -10,7 +21,7 @@ class Detector:
     """
     Runs the YOLOv8 model on a single frame.
 
-    The model file 'best.onnx' must be in the models/ directory.
+    The model file 'best.pt' must be in the models/ directory.
 
     Detects these classes:
         - good_screw
@@ -20,7 +31,7 @@ class Detector:
         - tip_defect
     """
 
-    def __init__(self, model_path="models/best.onnx", confidence=0.4):
+    def __init__(self, model_path="models/best.pt", confidence=0.4):
         self.model_path = model_path
         self.confidence = confidence
         # Explicitly define segment task for ONNX models to avoid auto-guessing warnings

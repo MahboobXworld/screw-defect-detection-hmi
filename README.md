@@ -7,11 +7,11 @@ A premium, real-time Computer Vision & Human-Machine Interface (HMI) dashboard f
 ## 🚀 Key Features
 
 * **Real-time Computer Vision Pipeline**: Integrated with a retrained YOLOv8s-seg model (trained for 100 epochs on the MVTec Screw dataset annotated via Label Studio) to detect screws and classify quality states:
-  * `defect_head` (Index 0)
-  * `defect_neck` (Index 1)
-  * `screw` (Index 2)
-  * `defect_thread` (Index 3)
-  * `defect_tip` (Index 4)
+  * `head_defect` (Index 0)
+  * `neck_defect` (Index 1)
+  * `screw` (Index 2) - mapped to `good_screw` in the inspection pipeline
+  * `thread_defect` (Index 3)
+  * `tip_defect` (Index 4)
 * **Advanced Multi-Object Tracking & Counting**: A robust custom tracker combining centroid proximity and IoU matching to keep track of screw IDs across frames:
   * **Unified 2D Isotropic Detection Merging**: Automatically groups overlapping or vertically/diagonally aligned detections belonging to the same physical screw (such as a good screw body detection and multiple defect markers) using 2D isotropic proximity rules, ensuring each screw is tracked as a single unified entity to prevent double-counting.
   * **Trajectory Smoothing via Kalman Filtering**: Integrates a 6-state constant-velocity Kalman Filter to predict states and smooth trajectories. If a screw is temporarily obscured or not detected for a frame or two due to glare, the tracker predicts its next position, keeping the track alive and preventing ID re-assignment.
@@ -52,7 +52,7 @@ screw-defect-detection-hmi/
 ├── database/                # SQLite local DB directory
 │   └── inspection.db        # Persistent SQL inspection log
 ├── models/                  # ML Models directory
-│   └── best.onnx            # YOLOv8s-seg ONNX format weights
+│   └── best.pt              # YOLOv8s-seg PyTorch format weights
 ├── reports/                 # Output directory for exported PDF, Excel, and CSV reports
 ├── snapshots/               # Snapshot images of detected defects
 └── videos/                  # Conveyor test video directory
