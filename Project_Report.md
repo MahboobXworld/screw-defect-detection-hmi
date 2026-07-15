@@ -17,7 +17,7 @@ I built this Automated Screw Defect Inspection System to serve as a high-speed, 
 ## 2. My Model Training, Dataset & Evaluation
 
 ### A. Dataset and Annotation
-I used the MVTec Screw dataset downloaded from Roboflow and annotated it using Label Studio. I labeled the dataset using segmentation annotations with the following classes:
+I used my own custom screw defect instance segmentation dataset, which is publicly available on Kaggle at https://www.kaggle.com/datasets/mahboobxalam/screw-defect-instance-segmentation-dataset. I curated and annotated the dataset for this project using segmentation labels with the following classes:
 *   `head_defect`
 *   `neck_defect`
 *   `screw`
