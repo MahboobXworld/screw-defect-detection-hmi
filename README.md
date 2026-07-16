@@ -6,7 +6,7 @@ A premium, real-time Computer Vision & Human-Machine Interface (HMI) dashboard f
 
 ## 🚀 Key Features
 
-* **Real-time Computer Vision Pipeline**: Integrated with a retrained YOLOv8s-seg model (trained for 100 epochs on the MVTec Screw dataset annotated via Label Studio) to detect screws and classify quality states:
+* **Real-time Computer Vision Pipeline**: Integrated with a retrained YOLOv8s-seg model (trained for 100 epochs on a custom screw defect instance segmentation dataset available on Kaggle: https://www.kaggle.com/datasets/mahboobxalam/screw-defect-instance-segmentation-dataset) to detect screws and classify quality states:
   * `head_defect` (Index 0)
   * `neck_defect` (Index 1)
   * `screw` (Index 2) - mapped to `good_screw` in the inspection pipeline
